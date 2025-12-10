@@ -443,13 +443,16 @@ let rec leaf_text node =
     | [child] -> leaf_text (forget_type child)
     | _ -> None
 
-let rec texts node =
-  match node.values with
-  | `Text s -> [s]
-  | `Element {children; _} ->
-    children |> List.map forget_type |> List.map texts |> List.fold_left (@) []
-  | `Document {roots; _} ->
-    roots |> List.map forget_type |> List.map texts |> List.fold_left (@) []
+let texts node =
+  let rec collect acc node =
+    match node.values with
+    | `Text s -> s :: acc
+    | `Element {children; _} ->
+      List.fold_left (fun acc child -> collect acc (forget_type child)) acc children
+    | `Document {roots; _} ->
+      List.fold_left (fun acc root -> collect acc (forget_type root)) acc roots
+  in
+  List.rev (collect [] node)
 
 let trimmed_texts node =
   texts node
