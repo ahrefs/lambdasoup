@@ -86,6 +86,19 @@ let create_document doctype roots =
 
 let create_soup () = create_document None []
 
+let clone node =
+  let rec clone' node =
+    match node.values with
+    | `Text s -> create_text s
+    | `Element {name; attributes; children} ->
+      let children' = List.map clone' children in
+      create_element name attributes children'
+    | `Document {roots; doctype} ->
+      let roots' = List.map clone' roots in
+      create_document doctype roots'
+  in
+  forget_type (clone' (forget_type node))
+
 let from_signals' ~map_attributes signals =
   let doctype = ref None in
   signals

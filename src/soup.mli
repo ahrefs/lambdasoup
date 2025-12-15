@@ -583,6 +583,9 @@ val create_text : string -> general node
 val create_soup : unit -> soup node
 (** Creates a new empty document node. *)
 
+val clone : 'a node -> 'a node
+(** [clone node] creates a deep copy of [node]. The copy has no parent. *)
+
 val append_child : element node -> (_ node) -> unit
 (** [append_child element node] adds [node] to the end of the child list of
     [element]. *)

@@ -1021,6 +1021,78 @@ let suites = [
 
       assert_equal (soup |> to_string) "<p></p>");
 
+    ("clone" >:: fun _ ->
+      (* Clone an element with children *)
+      let soup = parse "<div class=\"container\"><p id=\"para\">Hello</p></div>" in
+      let div = soup $ "div" in
+      let p = div $ "p" in
+      let cloned_p = clone p in
+
+      (* Cloned node should be equal structurally *)
+      assert_bool "clone is structurally equal" (equal p cloned_p);
+
+      (* Cloned node should have no parent *)
+      assert_equal (parent cloned_p) None;
+
+      (* Original should still be in the document - p's parent is div *)
+      assert_bool "original still has parent" (parent p <> None);
+      assert_equal (parent p |> map_option name) (Some "div");
+
+      (* Cloned node should be independent - modifying it shouldn't affect original *)
+      set_attribute "id" "modified" (cloned_p |> element |> unwrap_option);
+      assert_equal (p |> attribute "id") (Some "para");
+      assert_equal (cloned_p |> element |> unwrap_option |> attribute "id") (Some "modified");
+
+      (* Cloned node can be inserted elsewhere without moving the original *)
+      let target = create_element "section" in
+      append_child target cloned_p;
+      assert_bool "original still has parent after clone appended" (parent p <> None);
+      assert_equal (target |> children |> count) 1);
+
+    ("clone-text" >:: fun _ ->
+      let soup = parse "Hello world" in
+      let text_node = soup |> R.child in
+      let cloned = clone text_node in
+
+      assert_equal (texts cloned) ["Hello world"];
+      assert_equal (parent cloned) None);
+
+    ("clone-document" >:: fun _ ->
+      let soup = parse "<html><body><p>Test</p></body></html>" in
+      let cloned = clone soup in
+
+      assert_bool "clone is structurally equal" (equal soup cloned);
+      assert_equal (cloned |> is_document) true;
+
+      (* Modifying cloned doc shouldn't affect original *)
+      delete (cloned $ "p");
+      assert_equal (soup $$ "p" |> count) 1;
+      assert_equal (cloned $$ "p" |> count) 0);
+
+    ("clone-toc-usecase" >:: fun _ ->
+      (* Demonstrates the use case from issue #24: building a TOC *)
+      let soup = parse "<article><h1>Title</h1><h2 id=\"sec1\">Section 1</h2><p>Content</p><h2 id=\"sec2\">Section 2</h2></article>" in
+      let toc = create_element "nav" in
+
+      (* Build TOC by cloning header contents into links *)
+      soup $$ "h2" |> iter (fun h2 ->
+        let link = create_element "a" in
+        (match id h2 with
+         | Some id -> set_attribute "href" ("#" ^ id) link
+         | None -> ());
+        (* Clone the h2's children into the link *)
+        h2 |> children |> iter (fun child ->
+          append_child link (clone child));
+        append_child toc link);
+
+      (* Verify TOC was built correctly *)
+      assert_equal (toc $$ "a" |> count) 2;
+      assert_equal (toc $$ "a" |> to_list |> List.map (fun a -> attribute "href" a)) [Some "#sec1"; Some "#sec2"];
+
+      (* Original headers should be unchanged *)
+      assert_equal (soup $$ "h2" |> count) 2;
+      assert_equal (soup $ "h2" |> texts) ["Section 1"]);
+
     ("mutate-attribute" >:: fun _ ->
       let li = page "list" |> parse $ "li" in
 
