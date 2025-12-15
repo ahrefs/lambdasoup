@@ -1022,7 +1022,6 @@ let suites = [
       assert_equal (soup |> to_string) "<p></p>");
 
     ("clone" >:: fun _ ->
-      (* Clone an element with children *)
       let soup = parse "<div class=\"container\"><p id=\"para\">Hello</p></div>" in
       let div = soup $ "div" in
       let p = div $ "p" in
