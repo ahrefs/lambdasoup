@@ -332,33 +332,53 @@ let siblings node =
     children parent
     |> filter (fun child -> child != (forget_type node))
 
-let split_at_identity function_name v l =
+let suffix_after_identity function_name v l =
+  let rec loop = function
+    | [] ->
+      failwith
+        ("Soup." ^ function_name ^
+         ": internal error: child not in parent's child list") [@coverage off]
+    | u::suffix ->
+      if u == v then suffix else loop suffix
+  in
+  loop l
+
+let prefix_before_identity function_name v l =
   let rec loop prefix = function
     | [] ->
       failwith
         ("Soup." ^ function_name ^
          ": internal error: child not in parent's child list") [@coverage off]
     | u::suffix ->
-      if u == v then prefix, suffix else loop (u::prefix) suffix
+      if u == v then prefix else loop (u::prefix) suffix
   in
   loop [] l
 
-let sibling_lists function_name select node =
+let next_siblings node =
   match simple_parent node with
   | None -> empty
   | Some parent ->
     match child_list parent with
     | None ->
       failwith
-        ("Soup." ^ function_name ^ ": internal error: parent has no children")
+        ("Soup.next_siblings: internal error: parent has no children")
           [@coverage off]
     | Some children ->
-      let lists =
-        split_at_identity function_name (forget_type node) children in
-      {eliminate = fun f init -> select lists |> List.fold_left f init}
+      let suffix = suffix_after_identity "next_siblings" (forget_type node) children in
+      {eliminate = fun f init -> List.fold_left f init suffix}
 
-let next_siblings node = sibling_lists "next_siblings" snd node
-let previous_siblings node = sibling_lists "previous_siblings" fst node
+let previous_siblings node =
+  match simple_parent node with
+  | None -> empty
+  | Some parent ->
+    match child_list parent with
+    | None ->
+      failwith
+        ("Soup.previous_siblings: internal error: parent has no children")
+          [@coverage off]
+    | Some children ->
+      let prefix = prefix_before_identity "previous_siblings" (forget_type node) children in
+      {eliminate = fun f init -> List.fold_left f init prefix}
 
 let next_sibling node = next_siblings node |> first
 let previous_sibling node = previous_siblings node |> first
