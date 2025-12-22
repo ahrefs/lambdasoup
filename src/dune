@@ -3,6 +3,6 @@
  (public_name lambdasoup)
  (synopsis "Easy functional HTML scraping and manipulation")
  (wrapped false)
- (flags (:standard -w +A -warn-error -3))
+ (flags (:standard -w +A -warn-error -3 -open ExtLib))
  (instrumentation (backend bisect_ppx))
- (libraries markup camlp-streams))
+ (libraries extlib markup camlp-streams))

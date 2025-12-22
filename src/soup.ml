@@ -1101,7 +1101,7 @@ let rec equal_general normalize_children n n' =
     &&
       begin
         let sort =
-          List.sort (fun attr attr' -> compare (fst attr) (fst attr')) in
+          Stdlib.List.sort (fun attr attr' -> compare (fst attr) (fst attr')) in
         (sort values.attributes) = (sort values'.attributes)
       end
     &&
