@@ -29,6 +29,69 @@ struct
       String.sub s 0 (String.length s - suffix_length)
 end
 
+module Children = struct
+  type 'a t = 'a Dllist.node_t option
+
+  let empty = None
+  let _is_empty = function None -> true | Some _ -> false
+  let _singleton n = Some (Dllist.create n)
+
+  let of_list = function
+    | [] -> None
+    | nodes -> Some (Dllist.of_list nodes)
+
+  let to_list = function
+    | None -> []
+    | Some node -> Dllist.to_list node
+
+  let iter f = function
+    | None -> ()
+    | Some node -> Dllist.iter f node
+
+  let fold_left f init = function
+    | None -> init
+    | Some node -> Dllist.fold_left f init node
+
+  let length = function
+    | None -> 0
+    | Some node -> Dllist.length node
+
+  let append t n = match t with
+    | None -> Some (Dllist.create n)
+    | Some first -> ignore (Dllist.prepend first n); t
+
+  let prepend t n = match t with
+    | None -> Some (Dllist.create n)
+    | Some first -> Some (Dllist.prepend first n)
+
+  let remove t dll_node = match t with
+    | None -> None
+    | Some first ->
+      if Dllist.next dll_node == dll_node then (Dllist.remove dll_node; None)
+      else if dll_node == first then (let nxt = Dllist.next dll_node in Dllist.remove dll_node; Some nxt)
+      else (Dllist.remove dll_node; t)
+
+  let find_node t target = match t with
+    | None -> None
+    | Some first ->
+      let rec loop current =
+        if Dllist.get current == target then Some current
+        else let nxt = Dllist.next current in
+          if nxt == first then None else loop nxt
+      in loop first
+
+  let next t dll_node = match t with
+    | None -> None
+    | Some first ->
+      let nxt = Dllist.next dll_node in
+      if nxt == first then None else Some nxt
+
+  let prev t dll_node = match t with
+    | None -> None
+    | Some first ->
+      if dll_node == first then None else Some (Dllist.prev dll_node)
+end
+
 type element = unit
 type general = unit
 type soup = unit
@@ -36,18 +99,19 @@ type soup = unit
 type element_values =
   {mutable name       : string;
    mutable attributes : (string * string) list;
-   mutable children   : general node list}
+   mutable children   : general node Children.t}
 
 and document_values =
-  {mutable roots : general node list;
+  {mutable roots : general node Children.t;
    doctype : Markup.doctype option}
 
 and 'a node =
-  {mutable self   : 'b. 'b node option;
-   mutable parent : general node option;
-   values         : [ `Element of element_values
-                    | `Text of string
-                    | `Document of document_values ]}
+  {mutable self     : 'b. 'b node option;
+   mutable parent   : general node option;
+   mutable dll_node : general node Dllist.node_t option;
+   values           : [ `Element of element_values
+                      | `Text of string
+                      | `Document of document_values ]}
 
 let require_internal message = function
   | None -> failwith message
@@ -66,22 +130,30 @@ let forget_type : (_ node) -> (_ node) =
 let coerce node = forget_type node
 
 let create_element name attributes children =
-  let values = {name; attributes; children} in
-  let node = {self = None; parent = None; values = `Element values} in
+  let children_dll = Children.of_list children in
+  let values = {name; attributes; children = children_dll} in
+  let node = {self = None; parent = None; dll_node = None; values = `Element values} in
   node.self <- Some node;
-  children |> List.iter (fun child -> child.parent <- Some node);
+  Children.iter (fun child ->
+    child.parent <- Some node;
+    child.dll_node <- Children.find_node children_dll child
+  ) children_dll;
   node
 
 let create_text text =
-  let node = {self = None; parent = None; values = `Text text} in
+  let node = {self = None; parent = None; dll_node = None; values = `Text text} in
   node.self <- Some node;
   node
 
 let create_document doctype roots =
+  let roots_dll = Children.of_list roots in
   let node =
-    {self = None; parent = None; values = `Document {roots; doctype}} in
+    {self = None; parent = None; dll_node = None; values = `Document {roots = roots_dll; doctype}} in
   node.self <- Some node;
-  roots |> List.iter (fun root -> root.parent <- Some node);
+  Children.iter (fun root ->
+    root.parent <- Some node;
+    root.dll_node <- Children.find_node roots_dll root
+  ) roots_dll;
   node
 
 let create_soup () = create_document None []
@@ -91,10 +163,10 @@ let clone node =
     match node.values with
     | `Text s -> create_text s
     | `Element {name; attributes; children} ->
-      let children' = List.map clone' children in
+      let children' = Children.to_list children |> List.map clone' in
       create_element name attributes children'
     | `Document {roots; doctype} ->
-      let roots' = List.map clone' roots in
+      let roots' = Children.to_list roots |> List.map clone' in
       create_document doctype roots'
   in
   forget_type (clone' (forget_type node))
@@ -294,7 +366,7 @@ let child_list = function
 
 let children node =
   match child_list node with
-  | Some children -> {eliminate = fun f init -> List.fold_left f init children}
+  | Some children -> {eliminate = fun f init -> Children.fold_left f init children}
   | _ -> empty
 
 let rec descendants node =
@@ -332,53 +404,45 @@ let siblings node =
     children parent
     |> filter (fun child -> child != (forget_type node))
 
-let suffix_after_identity function_name v l =
-  let rec loop = function
-    | [] ->
-      failwith
-        ("Soup." ^ function_name ^
-         ": internal error: child not in parent's child list") [@coverage off]
-    | u::suffix ->
-      if u == v then suffix else loop suffix
-  in
-  loop l
-
-let prefix_before_identity function_name v l =
-  let rec loop prefix = function
-    | [] ->
-      failwith
-        ("Soup." ^ function_name ^
-         ": internal error: child not in parent's child list") [@coverage off]
-    | u::suffix ->
-      if u == v then prefix else loop (u::prefix) suffix
-  in
-  loop [] l
-
 let next_siblings node =
-  match simple_parent node with
-  | None -> empty
-  | Some parent ->
+  match simple_parent node, node.dll_node with
+  | None, _ -> empty
+  | Some _, None ->
+    failwith "Soup.next_siblings: internal error: node has no dll_node" [@coverage off]
+  | Some parent, Some dll_node ->
     match child_list parent with
     | None ->
       failwith
         ("Soup.next_siblings: internal error: parent has no children")
           [@coverage off]
     | Some children ->
-      let suffix = suffix_after_identity "next_siblings" (forget_type node) children in
-      {eliminate = fun f init -> List.fold_left f init suffix}
+      {eliminate = fun f init ->
+        let rec loop acc current =
+          match Children.next children current with
+          | None -> acc
+          | Some next_dll -> loop (f acc (Dllist.get next_dll)) next_dll
+        in
+        loop init dll_node}
 
 let previous_siblings node =
-  match simple_parent node with
-  | None -> empty
-  | Some parent ->
+  match simple_parent node, node.dll_node with
+  | None, _ -> empty
+  | Some _, None ->
+    failwith "Soup.previous_siblings: internal error: node has no dll_node" [@coverage off]
+  | Some parent, Some dll_node ->
     match child_list parent with
     | None ->
       failwith
         ("Soup.previous_siblings: internal error: parent has no children")
           [@coverage off]
     | Some children ->
-      let prefix = prefix_before_identity "previous_siblings" (forget_type node) children in
-      {eliminate = fun f init -> List.fold_left f init prefix}
+      {eliminate = fun f init ->
+        let rec loop acc current =
+          match Children.prev children current with
+          | None -> acc
+          | Some prev_dll -> loop (f acc (Dllist.get prev_dll)) prev_dll
+        in
+        loop init dll_node}
 
 let next_sibling node = next_siblings node |> first
 let previous_sibling node = previous_siblings node |> first
@@ -396,8 +460,9 @@ let index_of node =
         [@coverage off]
     | Some children ->
       with_stop (fun stop ->
-        children |> List.iteri (fun index child ->
-          if child == (forget_type node) then stop.throw (index + 1));
+        ignore (Children.fold_left (fun index child ->
+          if child == (forget_type node) then stop.throw index
+          else index + 1) 1 children);
         failwith
           "Soup.index_of: internal error: child not in parent's child list")
             [@coverage off]
@@ -469,6 +534,7 @@ let rec leaf_text node =
       |> require_internal
         ("Soup.leaf_text: internal error: node is not a text node, " ^
          "but has no child list")
+      |> Children.to_list
       |> normalize_children trim
     in
     match children with
@@ -481,9 +547,9 @@ let texts node =
     match node.values with
     | `Text s -> s :: acc
     | `Element {children; _} ->
-      List.fold_left (fun acc child -> collect acc (forget_type child)) acc children
+      Children.fold_left (fun acc child -> collect acc (forget_type child)) acc children
     | `Document {roots; _} ->
-      List.fold_left (fun acc root -> collect acc (forget_type root)) acc roots
+      Children.fold_left (fun acc root -> collect acc (forget_type root)) acc roots
   in
   List.rev (collect [] node)
 
@@ -1055,7 +1121,7 @@ let signals root =
           (("http://www.w3.org/1999/xhtml", name),
            List.map (fun (n, v) -> ("", n), v) attributes)
       in
-      `End_element::(traverse_list (start_signal::acc) children)
+      `End_element::(traverse_children (start_signal::acc) children)
 
     | {values = `Document {roots; doctype}; _} ->
       let acc =
@@ -1063,11 +1129,11 @@ let signals root =
         | None -> acc
         | Some doctype -> acc @ [`Doctype doctype]
       in
-      traverse_list acc roots
+      traverse_children acc roots
 
     | {values = `Text s; _} -> (`Text [s])::acc
 
-  and traverse_list acc l = List.fold_left traverse acc l
+  and traverse_children acc c = Children.fold_left traverse acc c
 
   in
 
@@ -1084,8 +1150,8 @@ let rec equal_general normalize_children n n' =
   let equal_text s s' = s = s' in
 
   let equal_children children children' =
-    let children = normalize_children children in
-    let children' = normalize_children children' in
+    let children = Children.to_list children |> normalize_children in
+    let children' = Children.to_list children' |> normalize_children in
 
     try
       List.iter2 (fun c c' ->
@@ -1126,28 +1192,45 @@ let equal_modulo_whitespace n n' =
   equal_general
     (normalize_children String.trim) (forget_type n) (forget_type n')
 
-let mutate_child_list f node =
+let get_children node =
   match node.values with
-  | `Element values -> values.children <- f values.children
-  | `Document values -> values.roots <- f values.roots
-  | `Text _ -> failwith "Soup.mutate_child_list: node has no children"
+  | `Element {children; _} -> children
+  | `Document {roots; _} -> roots
+  | `Text _ -> failwith "Soup.get_children: node has no children"
+
+let set_children node new_children =
+  match node.values with
+  | `Element values -> values.children <- new_children
+  | `Document values -> values.roots <- new_children
+  | `Text _ -> failwith "Soup.set_children: node has no children"
 
 let strip_document node =
   if is_document node then
-    let children = node |> children |> to_list in
-    (children |> List.iter (fun child -> child.parent <- None);
-    mutate_child_list (fun _ -> []) node);
-    children
+    let children_list = node |> children |> to_list in
+    (children_list |> List.iter (fun child ->
+      child.parent <- None;
+      child.dll_node <- None);
+    set_children node Children.empty);
+    children_list
   else
     [node]
 
 let delete node =
-  match node.parent with
-  | None -> ()
-  | Some parent ->
-    mutate_child_list
-      (List.filter (fun child -> child != (forget_type node))) parent;
+  match node.parent, node.dll_node with
+  | None, _ -> ()
+  | Some parent, None ->
+    (* Fallback: find and remove (shouldn't happen normally) *)
+    let children = get_children parent in
+    (match Children.find_node children (forget_type node) with
+    | Some dll_node ->
+      set_children parent (Children.remove children dll_node)
+    | None -> ());
     node.parent <- None
+  | Some parent, Some dll_node ->
+    let children = get_children parent in
+    set_children parent (Children.remove children dll_node);
+    node.parent <- None;
+    node.dll_node <- None
 
 let insert_at_index k element node =
   let element = forget_type element in
@@ -1157,16 +1240,33 @@ let insert_at_index k element node =
 
   let nodes = strip_document node in
 
-  mutate_child_list (fun l ->
-    let rec loop prefix index = function
-      | [] -> (List.rev prefix) @ nodes
-      | x::l' ->
-        if k <= index then (List.rev prefix) @ nodes @ (x::l')
-        else loop (x::prefix) (index + 1) l'
-    in
-    loop [] 1 l) element;
+  let children = get_children element in
+  let len = Children.length children in
 
-  nodes |> List.iter (fun node -> node.parent <- Some element)
+  let new_children =
+    if k <= 1 then
+      (* Prepend all nodes *)
+      List.fold_right (fun n c -> Children.prepend c n) nodes children
+    else if k > len then
+      (* Append all nodes *)
+      List.fold_left (fun c n -> Children.append c n) children nodes
+    else
+      (* Insert at index k - need to find position and splice *)
+      let children_list = Children.to_list children in
+      let rec loop prefix index = function
+        | [] -> (List.rev prefix) @ nodes
+        | x::l' ->
+          if k <= index then (List.rev prefix) @ nodes @ (x::l')
+          else loop (x::prefix) (index + 1) l'
+      in
+      Children.of_list (loop [] 1 children_list)
+  in
+  set_children element new_children;
+
+  (* Update parent and dll_node for inserted nodes *)
+  nodes |> List.iter (fun n ->
+    n.parent <- Some element;
+    n.dll_node <- Children.find_node new_children n)
 
 let append_child element node =
   insert_at_index ((element |> children |> count) + 1) element node
@@ -1189,8 +1289,12 @@ let insert_after target node =
     node
 
 let clear node =
-  mutate_child_list (fun children ->
-    children |> List.iter (fun child -> child.parent <- None); []) node
+  let children = get_children node in
+  Children.iter (fun child ->
+    child.parent <- None;
+    child.dll_node <- None
+  ) children;
+  set_children node Children.empty
 
 let replace target node =
   delete node;
@@ -1206,10 +1310,19 @@ let swap target element =
   let internal = "Soup.swap: internal error: non-element node given" in
   let target_children = child_list target |> require_internal internal in
   let element_children = child_list element |> require_internal internal in
-  target_children |> List.iter (fun child -> child.parent <- Some element);
-  element_children |> List.iter (fun child -> child.parent <- Some target);
-  mutate_child_list (fun _ -> element_children) target;
-  mutate_child_list (fun _ -> target_children) element;
+  (* Update parent pointers *)
+  Children.iter (fun child -> child.parent <- Some element) target_children;
+  Children.iter (fun child -> child.parent <- Some target) element_children;
+  (* Swap the children *)
+  set_children target element_children;
+  set_children element target_children;
+  (* Update dll_node pointers *)
+  Children.iter (fun child ->
+    child.dll_node <- Children.find_node element_children child
+  ) element_children;
+  Children.iter (fun child ->
+    child.dll_node <- Children.find_node target_children child
+  ) target_children;
   replace target element
 
 let wrap target element =
@@ -1223,24 +1336,32 @@ let unwrap node =
     parent node |> require_internal "Soup.unwrap: node has no parent" in
   let index = index_of node in
   delete node;
-  let children =
+  let children_list =
     match child_list node with
     | None -> []
-    | Some l -> l
+    | Some c -> Children.to_list c
   in
   (try clear node
   with Failure _ -> ());
-  List.rev children |> List.iter (insert_at_index index parent)
+  List.rev children_list |> List.iter (insert_at_index index parent)
 
 let append_root document node =
   delete node;
-  mutate_child_list (fun f -> f @ [forget_type node]) document;
-  node.parent <- Some document
+  let node = forget_type node in
+  let children = get_children document in
+  let new_children = Children.append children node in
+  set_children document new_children;
+  node.parent <- Some document;
+  node.dll_node <- Children.find_node new_children node
 
 let prepend_root document node =
   delete node;
-  mutate_child_list (fun f -> (forget_type node)::f) document;
-  node.parent <- Some document
+  let node = forget_type node in
+  let children = get_children document in
+  let new_children = Children.prepend children node in
+  set_children document new_children;
+  node.parent <- Some document;
+  node.dll_node <- match new_children with Some n -> Some n | None -> None
 
 let set_name new_name = function
   | {values = `Element e; _} ->
