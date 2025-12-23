@@ -60,6 +60,15 @@ module Children = struct
     | None -> Some (Dllist.create n)
     | Some first -> ignore (Dllist.prepend first n); t
 
+  (* Like append but also returns the dll_node of the newly appended element *)
+  let append_with_node t n = match t with
+    | None ->
+      let node = Dllist.create n in
+      (Some node, node)
+    | Some first ->
+      let new_node = Dllist.prepend first n in
+      (t, new_node)
+
   let prepend t n = match t with
     | None -> Some (Dllist.create n)
     | Some first -> Some (Dllist.prepend first n)
@@ -130,14 +139,23 @@ let forget_type : (_ node) -> (_ node) =
 let coerce node = forget_type node
 
 let create_element name attributes children =
-  let children_dll = Children.of_list children in
+  (* Build children list and set dll_node references in O(n) instead of O(n²) *)
+  let children_dll = match children with
+    | [] -> None
+    | first_child :: rest ->
+      let first_dll = Dllist.create first_child in
+      first_child.dll_node <- Some first_dll;
+      List.iter (fun child ->
+        (* prepend before first in a circular list = append at end *)
+        let new_dll = Dllist.prepend first_dll child in
+        child.dll_node <- Some new_dll
+      ) rest;
+      Some first_dll
+  in
   let values = {name; attributes; children = children_dll} in
   let node = {self = None; parent = None; dll_node = None; values = `Element values} in
   node.self <- Some node;
-  Children.iter (fun child ->
-    child.parent <- Some node;
-    child.dll_node <- Children.find_node children_dll child
-  ) children_dll;
+  Children.iter (fun child -> child.parent <- Some node) children_dll;
   node
 
 let create_text text =
@@ -146,14 +164,22 @@ let create_text text =
   node
 
 let create_document doctype roots =
-  let roots_dll = Children.of_list roots in
+  (* Build roots list and set dll_node references in O(n) instead of O(n²) *)
+  let roots_dll = match roots with
+    | [] -> None
+    | first_root :: rest ->
+      let first_dll = Dllist.create first_root in
+      first_root.dll_node <- Some first_dll;
+      List.iter (fun root ->
+        let new_dll = Dllist.prepend first_dll root in
+        root.dll_node <- Some new_dll
+      ) rest;
+      Some first_dll
+  in
   let node =
     {self = None; parent = None; dll_node = None; values = `Document {roots = roots_dll; doctype}} in
   node.self <- Some node;
-  Children.iter (fun root ->
-    root.parent <- Some node;
-    root.dll_node <- Children.find_node roots_dll root
-  ) roots_dll;
+  Children.iter (fun root -> root.parent <- Some node) roots_dll;
   node
 
 let create_soup () = create_document None []
@@ -1243,33 +1269,65 @@ let insert_at_index k element node =
   let children = get_children element in
   let len = Children.length children in
 
-  let new_children =
-    if k <= 1 then
-      (* Prepend all nodes *)
-      List.fold_right (fun n c -> Children.prepend c n) nodes children
-    else if k > len then
-      (* Append all nodes *)
-      List.fold_left (fun c n -> Children.append c n) children nodes
-    else
-      (* Insert at index k - need to find position and splice *)
-      let children_list = Children.to_list children in
-      let rec loop prefix index = function
-        | [] -> (List.rev prefix) @ nodes
-        | x::l' ->
-          if k <= index then (List.rev prefix) @ nodes @ (x::l')
-          else loop (x::prefix) (index + 1) l'
-      in
-      Children.of_list (loop [] 1 children_list)
-  in
-  set_children element new_children;
+  if k <= 1 then begin
+    (* Prepend all nodes - existing dll_nodes remain valid *)
+    let new_children =
+      List.fold_right (fun n c ->
+        let new_c = Children.prepend c n in
+        n.parent <- Some element;
+        (* prepend returns new first node which is exactly the dll_node for n *)
+        n.dll_node <- (match new_c with Some dll -> Some dll | None -> None);
+        new_c
+      ) nodes children
+    in
+    set_children element new_children
+  end
+  else if k > len then begin
+    (* Append all nodes - existing dll_nodes remain valid *)
+    let new_children =
+      List.fold_left (fun c n ->
+        let (new_c, new_dll) = Children.append_with_node c n in
+        n.parent <- Some element;
+        n.dll_node <- Some new_dll;
+        new_c
+      ) children nodes
+    in
+    set_children element new_children
+  end
+  else begin
+    (* Insert at index k - need to find position and splice.
+       This rebuilds the list, so all dll_nodes need updating. *)
+    let children_list = Children.to_list children in
+    let rec loop prefix index = function
+      | [] -> (List.rev prefix) @ nodes
+      | x::l' ->
+        if k <= index then (List.rev prefix) @ nodes @ (x::l')
+        else loop (x::prefix) (index + 1) l'
+    in
+    let new_children = Children.of_list (loop [] 1 children_list) in
+    set_children element new_children;
+    Children.iter (fun n ->
+      n.parent <- Some element;
+      n.dll_node <- Children.find_node new_children n
+    ) new_children
+  end
 
-  (* Update parent and dll_node for inserted nodes *)
-  nodes |> List.iter (fun n ->
-    n.parent <- Some element;
-    n.dll_node <- Children.find_node new_children n)
-
+(* Optimized append_child - O(1) for single node append *)
 let append_child element node =
-  insert_at_index ((element |> children |> count) + 1) element node
+  let element = forget_type element in
+  let node = forget_type node in
+  delete node;
+  let nodes = strip_document node in
+  let children = get_children element in
+  let new_children =
+    List.fold_left (fun c n ->
+      let (new_c, new_dll) = Children.append_with_node c n in
+      n.parent <- Some element;
+      n.dll_node <- Some new_dll;
+      new_c
+    ) children nodes
+  in
+  set_children element new_children
 
 let prepend_child element node =
   insert_at_index 1 element node
@@ -1310,19 +1368,12 @@ let swap target element =
   let internal = "Soup.swap: internal error: non-element node given" in
   let target_children = child_list target |> require_internal internal in
   let element_children = child_list element |> require_internal internal in
-  (* Update parent pointers *)
+  (* Update parent pointers - target_children will be in element, element_children in target *)
   Children.iter (fun child -> child.parent <- Some element) target_children;
   Children.iter (fun child -> child.parent <- Some target) element_children;
-  (* Swap the children *)
+  (* Swap the children lists - dll_nodes remain valid since we're moving entire Dllist structures *)
   set_children target element_children;
   set_children element target_children;
-  (* Update dll_node pointers *)
-  Children.iter (fun child ->
-    child.dll_node <- Children.find_node element_children child
-  ) element_children;
-  Children.iter (fun child ->
-    child.dll_node <- Children.find_node target_children child
-  ) target_children;
   replace target element
 
 let wrap target element =
@@ -1341,18 +1392,21 @@ let unwrap node =
     | None -> []
     | Some c -> Children.to_list c
   in
-  (try clear node
-  with Failure _ -> ());
-  List.rev children_list |> List.iter (insert_at_index index parent)
+  (try clear node with Failure _ -> ());
+  (* Batch insert all children at once using a temp document *)
+  if children_list <> [] then begin
+    let temp_doc = create_document None children_list in
+    insert_at_index index parent temp_doc
+  end
 
 let append_root document node =
   delete node;
   let node = forget_type node in
   let children = get_children document in
-  let new_children = Children.append children node in
+  let (new_children, new_dll) = Children.append_with_node children node in
   set_children document new_children;
   node.parent <- Some document;
-  node.dll_node <- Children.find_node new_children node
+  node.dll_node <- Some new_dll
 
 let prepend_root document node =
   delete node;
