@@ -56,10 +56,6 @@ module Children = struct
     | None -> 0
     | Some node -> Dllist.length node
 
-  let append t n = match t with
-    | None -> Some (Dllist.create n)
-    | Some first -> ignore (Dllist.prepend first n); t
-
   (* Like append but also returns the dll_node of the newly appended element *)
   let append_with_node t n = match t with
     | None ->
@@ -68,6 +64,20 @@ module Children = struct
     | Some first ->
       let new_node = Dllist.prepend first n in
       (t, new_node)
+
+  (* Insert after a given dll_node, returns the new dll_node. O(1) *)
+  let insert_after dll_node n = Dllist.append dll_node n
+
+  (* Get the k-th dll_node (1-indexed). O(k) *)
+  let nth t k = match t with
+    | None -> None
+    | Some first ->
+      let rec loop pos current =
+        if pos = k then Some current
+        else let nxt = Dllist.next current in
+          if nxt == first then None else loop (pos + 1) nxt
+      in
+      loop 1 first
 
   let prepend t n = match t with
     | None -> Some (Dllist.create n)
@@ -1295,21 +1305,20 @@ let insert_at_index k element node =
     set_children element new_children
   end
   else begin
-    (* Insert at index k - need to find position and splice.
-       This rebuilds the list, so all dll_nodes need updating. *)
-    let children_list = Children.to_list children in
-    let rec loop prefix index = function
-      | [] -> (List.rev prefix) @ nodes
-      | x::l' ->
-        if k <= index then (List.rev prefix) @ nodes @ (x::l')
-        else loop (x::prefix) (index + 1) l'
-    in
-    let new_children = Children.of_list (loop [] 1 children_list) in
-    set_children element new_children;
-    Children.iter (fun n ->
-      n.parent <- Some element;
-      n.dll_node <- Children.find_node new_children n
-    ) new_children
+    (* Middle insertion at position k where 2 <= k <= len.
+       O(k + m) where m is number of nodes to insert.
+       Find (k-1)-th node and insert after it using Dllist operations. *)
+    match Children.nth children (k - 1) with
+    | None -> () (* shouldn't happen since k <= len *)
+    | Some insert_after_dll ->
+      (* Insert nodes in order after insert_after_dll *)
+      ignore (List.fold_left (fun after_dll n ->
+        let new_dll = Children.insert_after after_dll n in
+        n.parent <- Some element;
+        n.dll_node <- Some new_dll;
+        new_dll
+      ) insert_after_dll nodes)
+      (* children pointer unchanged since first element not modified *)
   end
 
 (* Optimized append_child - O(1) for single node append *)
