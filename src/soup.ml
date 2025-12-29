@@ -36,10 +36,6 @@ module Children = struct
   let _is_empty = function None -> true | Some _ -> false
   let _singleton n = Some (Dllist.create n)
 
-  let of_list = function
-    | [] -> None
-    | nodes -> Some (Dllist.of_list nodes)
-
   let to_list = function
     | None -> []
     | Some node -> Dllist.to_list node
@@ -51,6 +47,10 @@ module Children = struct
   let fold_left f init = function
     | None -> init
     | Some node -> Dllist.fold_left f init node
+
+  let fold_right f t init = match t with
+    | None -> init
+    | Some node -> Dllist.fold_right f node init
 
   let length = function
     | None -> 0
@@ -1242,14 +1242,15 @@ let set_children node new_children =
 
 let strip_document node =
   if is_document node then
-    let children_list = node |> children |> to_list in
-    (children_list |> List.iter (fun child ->
+    let c = get_children node in
+    Children.iter (fun child ->
       child.parent <- None;
-      child.dll_node <- None);
-    set_children node Children.empty);
-    children_list
+      child.dll_node <- None
+    ) c;
+    set_children node Children.empty;
+    c
   else
-    [node]
+    Children.prepend Children.empty node
 
 let delete node =
   match node.parent, node.dll_node with
@@ -1282,7 +1283,7 @@ let insert_at_index k element node =
   if k <= 1 then begin
     (* Prepend all nodes - existing dll_nodes remain valid *)
     let new_children =
-      List.fold_right (fun n c ->
+      Children.fold_right (fun n c ->
         let new_c = Children.prepend c n in
         n.parent <- Some element;
         (* prepend returns new first node which is exactly the dll_node for n *)
@@ -1295,7 +1296,7 @@ let insert_at_index k element node =
   else if k > len then begin
     (* Append all nodes - existing dll_nodes remain valid *)
     let new_children =
-      List.fold_left (fun c n ->
+      Children.fold_left (fun c n ->
         let (new_c, new_dll) = Children.append_with_node c n in
         n.parent <- Some element;
         n.dll_node <- Some new_dll;
@@ -1312,7 +1313,7 @@ let insert_at_index k element node =
     | None -> () (* shouldn't happen since k <= len *)
     | Some insert_after_dll ->
       (* Insert nodes in order after insert_after_dll *)
-      ignore (List.fold_left (fun after_dll n ->
+      ignore (Children.fold_left (fun after_dll n ->
         let new_dll = Children.insert_after after_dll n in
         n.parent <- Some element;
         n.dll_node <- Some new_dll;
@@ -1329,7 +1330,7 @@ let append_child element node =
   let nodes = strip_document node in
   let children = get_children element in
   let new_children =
-    List.fold_left (fun c n ->
+    Children.fold_left (fun c n ->
       let (new_c, new_dll) = Children.append_with_node c n in
       n.parent <- Some element;
       n.dll_node <- Some new_dll;
@@ -1363,15 +1364,41 @@ let clear node =
   ) children;
   set_children node Children.empty
 
+(* Optimized replace - O(m) where m is nodes to insert, instead of O(n + m) *)
 let replace target node =
   delete node;
   let parent =
     parent target
     |> require_internal "Soup.replace: target node has no parent"
   in
-  let index = index_of target in
-  delete target;
-  insert_at_index index parent node
+  let target = forget_type target in
+  let node = forget_type node in
+  let nodes = strip_document node in
+
+  match target.dll_node with
+  | None ->
+    (* Fallback: target has no dll_node, use index-based approach *)
+    let index = index_of target in
+    delete target;
+    (match nodes with
+    | None -> ()
+    | Some _ ->
+      let temp_doc = create_document None (Children.to_list nodes) in
+      insert_at_index index parent temp_doc)
+  | Some target_dll ->
+    let children = get_children parent in
+    (* Insert all nodes after target using O(1) Dllist operations *)
+    ignore (Children.fold_left (fun after_dll n ->
+      let new_dll = Dllist.append after_dll n in
+      n.parent <- Some parent;
+      n.dll_node <- Some new_dll;
+      new_dll
+    ) target_dll nodes);
+    (* Remove target, updating children pointer if it was first *)
+    let new_children = Children.remove children target_dll in
+    target.parent <- None;
+    target.dll_node <- None;
+    set_children parent new_children
 
 let swap target element =
   let internal = "Soup.swap: internal error: non-element node given" in
