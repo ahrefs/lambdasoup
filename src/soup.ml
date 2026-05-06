@@ -1195,7 +1195,7 @@ let rec equal_general normalize_children n n' =
           raise_notrace (Invalid_argument "not equal"))
         children children';
       true
-    with Invalid_argument _ -> false
+    with Invalid_argument _ | ExtLib.List.Different_list_size _ -> false
   in
 
   let equal_element values values' =
