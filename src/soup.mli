@@ -281,6 +281,7 @@ val leaf_text : (_ node) -> string option
 
     - If [node] is a text node itself, with value [s], [leaf_text node]
       evaluates to [Some s].
+    - If [node] is a comment node, then, [leaf_text node] evaluates to [Some ""].
     - If [node] is an element or soup node, then, [leaf_text node] filters out
       all text children of [node] containing only whitespace. If there is only
       one child [child] remaining, it evaluates to [leaf_text child]. If there
@@ -296,9 +297,41 @@ some text                                =>   Some "some text"
 <div> <p>some text</p></div>             =>   Some "some text"
 <div><p>some text</p><p>more</p></div>   =>   None
 <div></div>                              =>   Some ""
+<!-- some comment -->                    =>   Some ""
 ]}
 
  *)
+
+ val comments : (_ node) -> string list
+ (** [comments node] is the content of all comment nodes that are descendants
+     of [node]. If [node] is itself a comment node, evaluates to [node]'s
+     content. *)
+
+val leaf_comment : (_ node) -> string option
+(** [leaf_comment node] retrieves the content of one comment node in [node]:
+
+    - If [node] is a comment node itself, with value [c], [leaf_comment node]
+      evaluates to [Some c].
+    - If [node] is a text node, then, [leaf_comment node] evaluates to [Some ""].
+    - If [node] is an element or soup node, then, [leaf_comment node] filters
+      out all text children of [node] containing only whitespace. If there is
+      only one child [child] remaining, it evaluates to [leaf_comment child].
+      If there are no children remaining, it evaluates to [Some ""]. If there
+      are two or more children remaining, it evaluates to [None].
+
+    Here are some examples of what [leaf_comment] produces for various nodes:
+
+{[
+<!-- some comment -->                        =>   Some "some comment"
+<p><!-- some comment --></p>                 =>   Some "some comment"
+<div><p><!-- some comment --></p></div>      =>   Some "some text"
+<div> <p><!-- some comment --></p></div>     =>   Some "some text"
+<div><p><!-- some --></p><!-- more --></div> =>   None
+<div></div>                                  =>   Some ""
+some text                                    =>   Some ""
+]}
+
+*)
 
 
 
@@ -438,6 +471,9 @@ val is_element : (_ node) -> bool
 
 val is_text : (_ node) -> bool
 (** Indicates whether the given node is a text node. *)
+
+val is_comment : (_ node) -> bool
+(** Indicates whether the given node is a comment node. *)
 
 val child : (_ node) -> general node option
 (** [child node] evaluates to [node]'s first child. Equivalent to
@@ -579,6 +615,9 @@ val create_element :
 
 val create_text : string -> general node
 (** Creates a new text node with the given content. *)
+
+val create_comment : string -> general node
+(** Creates a new comment node with the given content. *)
 
 val create_soup : unit -> soup node
 (** Creates a new empty document node. *)

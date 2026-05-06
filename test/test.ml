@@ -442,6 +442,13 @@ let suites = [
       let soup = "<p> <span> <em>foobar</em> </span> </p>" |> parse in
       assert_equal (leaf_text soup) (Some "foobar"));
 
+    ("leaf_text-comments" >:: fun _ ->
+      let soup = "<p><span>foobar<!--foo--></span><!--bar--> </p>" |> parse in
+      assert_equal (leaf_text soup) (Some "foobar");
+      let soup = "<p><!--foo--></p>" |> parse in
+      assert_equal (leaf_text soup) (Some "")
+    );
+
     ("leaf_text-empty" >:: fun _ ->
       let soup = "<p></p>" |> parse in
       assert_equal (leaf_text soup) (Some ""));
@@ -449,6 +456,30 @@ let suites = [
     ("texts-whole-document" >:: fun _ ->
       let soup = "<p>foo</p><p>bar</p>" |> parse in
       assert_equal (texts soup) ["foo"; "bar"]);
+
+    ("leaf_comment" >:: fun _ ->
+      let soup = "<p><!--foobar--></p>" |> parse in
+      assert_equal (leaf_comment soup) (Some "foobar"));
+
+    ("leaf_comment-whitespace" >:: fun _ ->
+      let soup = "<p> <span> <!--foobar--> </span> </p>" |> parse in
+      assert_equal (leaf_comment soup) (Some "foobar"));
+
+    ("leaf_comment-empty" >:: fun _ ->
+      let soup = "<p></p>" |> parse in
+      assert_equal (leaf_comment soup) (Some "");
+      let soup = "<!---->" |> parse in
+      assert_equal (leaf_comment soup) (Some ""));
+
+    ("leaf_comment-none" >:: fun _ ->
+      let soup = "<p>foo<!--bar--></p>" |> parse in
+      assert_equal (leaf_comment soup) (None);
+      let soup = "<!--foo--><!--bar-->" |> parse in
+        assert_equal (leaf_comment soup) (None));
+
+    ("comments-whole-document" >:: fun _ ->
+      let soup = "<p><!--foo--></p><p><!--bar--></p>" |> parse in
+      assert_equal (comments soup) ["foo"; "bar"]);
 
     ("children-traversal" >:: fun _ ->
       let soup = page "list" |> parse in
@@ -796,6 +827,7 @@ let suites = [
       assert_bool "not is_document" (is_document element |> not);
       assert_bool "is_element" (is_element element);
       assert_bool "not is_text" (is_text element |> not);
+      assert_bool "not is_comment" (is_comment element |> not);
       assert_equal (name element) "p";
 
       set_name "li" element;
@@ -814,9 +846,23 @@ let suites = [
       assert_bool "not is_document" (is_document node |> not);
       assert_bool "not is_element" (is_element node |> not);
       assert_bool "is_text" (is_text node);
+      assert_bool "not is_comment" (is_comment node |> not);
 
       assert_equal (node |> leaf_text) (Some "foo");
       assert_equal (node |> texts) ["foo"];
+      assert_equal (node |> parent) None;
+      assert_equal (node |> children |> count) 0);
+
+    ("create_comment" >:: fun _ ->
+      let node = create_comment "foo" in
+
+      assert_bool "not is_document" (is_document node |> not);
+      assert_bool "not is_element" (is_element node |> not);
+      assert_bool "not is_text" (is_text node |> not);
+      assert_bool "is_comment" (is_comment node);
+
+      assert_equal (node |> leaf_comment) (Some "foo");
+      assert_equal (node |> comments) ["foo"];
       assert_equal (node |> parent) None;
       assert_equal (node |> children |> count) 0);
 
@@ -826,6 +872,7 @@ let suites = [
       assert_bool "is_document" (is_document soup);
       assert_bool "not is_element" (is_element soup |> not);
       assert_bool "not is_text" (is_text soup |> not);
+      assert_bool "not is_comment" (is_comment soup |> not);
 
       assert_equal (soup |> children |> count) 0);
 
@@ -1022,7 +1069,7 @@ let suites = [
       assert_equal (soup |> to_string) "<p></p>");
 
     ("clone" >:: fun _ ->
-      let soup = parse "<div class=\"container\"><p id=\"para\">Hello</p></div>" in
+      let soup = parse "<div class=\"container\"><!--foo--><p id=\"para\">Hello</p></div>" in
       let div = soup $ "div" in
       let p = div $ "p" in
       let cloned_p = clone p in
@@ -1123,9 +1170,9 @@ let suites = [
       assert_equal (soup $ "LI" |> name) "li");
 
     ("equal" >:: fun _ ->
-      let document1 = "<html><body>\n<p>foo</p>\n<p>bar</p>\n</body></html>" in
-      let document2 = "<html><body><p>foo</p><p>bar</p></body></html>" in
-      let document3 = "<html><body>\n<p>foo</p><p>bar</p><p>plop</p></body></html>" in
+      let document1 = "<html><body><!--foo-->\n<p>foo</p>\n<p>bar</p>\n</body></html>" in
+      let document2 = "<html><body>\n<!--foo--><p>foo</p><p>bar</p></body></html>" in
+      let document3 = "<html><body>\n<!--foo--><p>foo</p><p>bar</p><p>plop</p></body></html>" in
 
       let test ?(not = fun x -> x) message document document' =
         assert_bool message (equal document document' |> not)
@@ -1156,17 +1203,30 @@ let suites = [
 
       assert_bool "equal" (equal (parse document1) (parse document2)));
 
+    ("equal-with-comment" >:: fun _ ->
+      let document1 = "<p><!--foo--></p>" in
+      let document2 = "<p><!--bar--></p>" in
+      let document3 = "<p></p>" in
+
+      assert_bool "equal" (equal (parse document1) (parse document1));
+      assert_bool "not equal" (equal (parse document1) (parse document2) |> not);
+      assert_bool "not equal" (equal (parse document1) (parse document3) |> not));
+
     ("equal_modulo_whitespace" >:: fun _ ->
-      let document1 = "<html><body>\n<p>foo</p>\n<p>bar</p>\n</body></html>" in
-      let document2 = "<html><body><p>foo</p><p>bar</p></body></html>" in
+      let document1 = "<html><body>\n<p>foo</p> <!--comment-->\n<p>bar</p>\n</body></html>" in
+      let document2 = "<html><body><p>foo</p><!--comment--> <p>bar</p></body></html>" in
+      let document3 = "<html><body><p>foo</p><!--other comment--> <p>bar</p></body></html>" in
 
       assert_bool "equal"
-        (equal_modulo_whitespace (parse document1) (parse document2)));
+        (equal_modulo_whitespace (parse document1) (parse document2));
+      assert_bool "not equal"
+        (equal_modulo_whitespace (parse document2) (parse document3) |> not));
 
     ("pretty_print" >:: fun _ ->
       let document =
         ("<!DOCTYPE html><html><head></head>" ^
-         "<body class=\"testing\">\n<p>foo</p>\n<p>bar</p>\n</body></html>")
+         "<body class=\"testing\">\n<!--a comment-->\n" ^
+         "<p>foo</p>\n<p>bar</p>\n</body></html>")
       in
 
       assert_equal document (document |> parse |> to_string);

@@ -130,6 +130,7 @@ and 'a node =
    mutable dll_node : general node Dllist.node_t option;
    values           : [ `Element of element_values
                       | `Text of string
+                      | `Comment of string
                       | `Document of document_values ]}
 
 let require_internal message = function
@@ -173,6 +174,11 @@ let create_text text =
   node.self <- Some node;
   node
 
+let create_comment comment =
+  let node = {self = None; parent = None; dll_node = None; values = `Comment comment} in
+  node.self <- Some node;
+  node
+
 let create_document doctype roots =
   (* Build roots list and set dll_node references in O(n) instead of O(n²) *)
   let roots_dll = match roots with
@@ -198,6 +204,7 @@ let clone node =
   let rec clone' node =
     match node.values with
     | `Text s -> create_text s
+    | `Comment c -> create_comment c
     | `Element {name; attributes; children} ->
       let children' = Children.to_list children |> List.map clone' in
       create_element name attributes children'
@@ -218,6 +225,7 @@ let from_signals' ~map_attributes signals =
     s)
   |> (fun s -> Markup.trees
     ~text:(fun ss -> create_text (String.concat "" ss))
+    ~comment:(fun c -> create_comment c)
     ~element:(fun name attributes children ->
       let attributes =
         attributes
@@ -260,17 +268,27 @@ let is_document node =
   match node.values with
   | `Element _ -> false
   | `Text _ -> false
+  | `Comment _ -> false
   | `Document _ -> true
 
 let is_element node =
   match node.values with
   | `Element _ -> true
   | `Text _ -> false
+  | `Comment _ -> false
   | `Document _ -> false
 
 let is_text node =
   match node.values with
   | `Text _ -> true
+  | `Comment _ -> false
+  | `Element _ -> false
+  | `Document _ -> false
+
+let is_comment node =
+  match node.values with
+  | `Text _ -> false
+  | `Comment _ -> true
   | `Element _ -> false
   | `Document _ -> false
 
@@ -540,7 +558,7 @@ let tags name' node =
 
 let tag name node = tags name node |> first
 
-let normalize_children trim children =
+let normalize_children ~drop_comments trim children =
   let rec loop prefix = function
     | [] -> List.rev prefix
     | node::rest ->
@@ -553,6 +571,9 @@ let normalize_children trim children =
           | {values = `Text s'; _}::prefix' ->
             loop ((create_text (s' ^ s))::prefix') rest
           | _ -> loop ((create_text s)::prefix) rest)
+      | `Comment _ ->
+        if drop_comments then loop prefix rest
+        else loop (node:: prefix) rest
       | _ -> loop (node::prefix) rest
   in
 
@@ -563,15 +584,16 @@ let rec leaf_text node =
 
   match node.values with
   | `Text s -> Some s
+  | `Comment _ -> Some ""
   | `Element _
   | `Document _ ->
     let children =
       child_list node
       |> require_internal
-        ("Soup.leaf_text: internal error: node is not a text node, " ^
-         "but has no child list")
+        ("Soup.leaf_text: internal error: node is neither a text node" ^
+         "nor a comment node, but has no child list")
       |> Children.to_list
-      |> normalize_children trim
+      |> normalize_children ~drop_comments:true trim
     in
     match children with
     | [] -> Some ""
@@ -582,6 +604,7 @@ let texts node =
   let rec collect acc node =
     match node.values with
     | `Text s -> s :: acc
+    | `Comment _ -> acc
     | `Element {children; _} ->
       Children.fold_left (fun acc child -> collect acc (forget_type child)) acc children
     | `Document {roots; _} ->
@@ -593,6 +616,39 @@ let trimmed_texts node =
   texts node
   |> List.map String.trim
   |> List.filter (fun s -> String.length s > 0)
+
+let rec leaf_comment node =
+  let trim s = if String.trim s = "" then "" else s in
+
+  match node.values with
+  | `Text _ -> Some ""
+  | `Comment c -> Some c
+  | `Element _
+  | `Document _ ->
+    let children =
+      child_list node
+      |> require_internal
+        ("Soup.leaf_comment: internal error: node is neither a text node" ^
+         "nor a comment node, but has no child list")
+      |> Children.to_list
+      |> normalize_children ~drop_comments:false trim
+    in
+    match children with
+    | [] -> Some ""
+    | [child] -> leaf_comment (forget_type child)
+    | _ -> None
+
+let comments node =
+  let rec collect acc node =
+    match node.values with
+    | `Text _ -> acc
+    | `Comment c -> c :: acc
+    | `Element {children; _} ->
+      Children.fold_left (fun acc child -> collect acc (forget_type child)) acc children
+    | `Document {roots; _} ->
+      Children.fold_left (fun acc root -> collect acc (forget_type root)) acc roots
+  in
+  List.rev (collect [] node)
 
 exception Parse_error of string
 
@@ -1168,6 +1224,7 @@ let signals root =
       traverse_children acc roots
 
     | {values = `Text s; _} -> (`Text [s])::acc
+    | {values = `Comment c; _} -> (`Comment c)::acc
 
   and traverse_children acc c = Children.fold_left traverse acc c
 
@@ -1184,6 +1241,8 @@ let to_string root =
 
 let rec equal_general normalize_children n n' =
   let equal_text s s' = s = s' in
+
+  let equal_comment c c' = c = c' in
 
   let equal_children children children' =
     let children = Children.to_list children |> normalize_children in
@@ -1216,29 +1275,30 @@ let rec equal_general normalize_children n n' =
 
   match n, n' with
   | {values = `Text s; _}, {values = `Text s'; _} -> equal_text s s'
+  | {values = `Comment c; _}, {values = `Comment c'; _} -> equal_comment c c'
   | {values = `Element v; _}, {values = `Element v'; _} -> equal_element v v'
   | {values = `Document v; _}, {values = `Document v'; _} -> equal_document v v'
   | _ -> false
 
 let equal n n' =
   equal_general
-    (normalize_children (fun s -> s)) (forget_type n) (forget_type n')
+    (normalize_children ~drop_comments:false (fun s -> s)) (forget_type n) (forget_type n')
 
 let equal_modulo_whitespace n n' =
   equal_general
-    (normalize_children String.trim) (forget_type n) (forget_type n')
+    (normalize_children ~drop_comments:false String.trim) (forget_type n) (forget_type n')
 
 let get_children node =
   match node.values with
   | `Element {children; _} -> children
   | `Document {roots; _} -> roots
-  | `Text _ -> failwith "Soup.get_children: node has no children"
+  | `Text _ | `Comment _ -> failwith "Soup.get_children: node has no children"
 
 let set_children node new_children =
   match node.values with
   | `Element values -> values.children <- new_children
   | `Document values -> values.roots <- new_children
-  | `Text _ -> failwith "Soup.set_children: node has no children"
+  | `Text _ | `Comment _ -> failwith "Soup.set_children: node has no children"
 
 let strip_document node =
   if is_document node then
