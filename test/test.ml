@@ -1125,6 +1125,7 @@ let suites = [
     ("equal" >:: fun _ ->
       let document1 = "<html><body>\n<p>foo</p>\n<p>bar</p>\n</body></html>" in
       let document2 = "<html><body><p>foo</p><p>bar</p></body></html>" in
+      let document3 = "<html><body>\n<p>foo</p><p>bar</p><p>plop</p></body></html>" in
 
       let test ?(not = fun x -> x) message document document' =
         assert_bool message (equal document document' |> not)
@@ -1132,6 +1133,7 @@ let suites = [
 
       test "self-equal" (parse document1) (parse document1);
       test ~not "whitespace matters" (parse document1) (parse document2);
+      test ~not "whitespace matters" (parse document2) (parse document3);
 
       test ~not "soup/element" (create_element "a") (create_soup ());
       test ~not "soup/text" (create_text "foo") (create_soup ());
