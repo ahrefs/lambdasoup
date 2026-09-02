@@ -5,4 +5,4 @@
  (wrapped false)
  (flags (:standard -w +A -warn-error -3 -open ExtLib))
  (instrumentation (backend bisect_ppx))
- (libraries extlib markup camlp-streams))
+ (libraries extlib markup markup.lite camlp-streams))

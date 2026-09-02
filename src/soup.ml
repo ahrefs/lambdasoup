@@ -1233,11 +1233,9 @@ let signals root =
   List.rev (traverse [] root) |> Markup.of_list
 
 let pretty_print root =
-  signals root
-  |> Markup.pretty_print |> (fun s -> Markup.write_html s) |> Markup.to_string
+  signals root |> Markup.pretty_print |> Markup_lite.to_html_string
 
-let to_string root =
-  signals root |> (fun s -> Markup.write_html s) |> Markup.to_string
+let to_string root = signals root |> Markup_lite.to_html_string
 
 let rec equal_general normalize_children n n' =
   let equal_text s s' = s = s' in
