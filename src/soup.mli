@@ -103,6 +103,12 @@ val parse : string -> soup node
     Lambda Soup something other than bytes, see {{:#2_Parsingsignals} Parsing
     signals}. *)
 
+module Internal : sig
+  val on_markup_comparison : (unit -> unit) ref
+  val on_markup_mismatch : (unit -> unit) ref
+  val on_lite_exception : (exn -> unit) ref
+end
+
 exception Parse_error of string
 (** Raised when a CSS selector given to {!select} and similar functions is
     syntactically invalid.
