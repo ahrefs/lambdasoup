@@ -242,7 +242,13 @@ let from_signals' ~map_attributes signals =
 let from_signals =
   from_signals' ~map_attributes:(fun _n a -> a)
 
-let parse text =
+module Internal = struct
+  let on_markup_comparison = ref ignore
+  let on_markup_mismatch = ref ignore
+  let on_lite_exception = ref ignore
+end
+
+let parse_with parse_html text =
   let body_attributes = ref [] in
   let report _l e =
     match e with
@@ -250,9 +256,7 @@ let parse text =
       body_attributes := !body_attributes @ attributes
     | _ -> () in
   text
-  |> Markup.string
-  |> (fun s -> Markup.parse_html ~report s)
-  |> Markup.signals
+  |> parse_html ~report
   |> from_signals'
     ~map_attributes:(fun name attributes ->
       match name with
@@ -263,6 +267,15 @@ let parse text =
           | false -> (n, v)::attributes
         ) attributes !body_attributes
       | _ -> attributes)
+
+let parse_baseline text =
+  parse_with
+    (fun ~report text ->
+      text |> Markup.string |> Markup.parse_html ~report |> Markup.signals)
+    text
+
+let parse_lite text =
+  parse_with (fun ~report text -> Markup_lite.parse_html ~report text) text
 
 let is_document node =
   match node.values with
@@ -1233,11 +1246,9 @@ let signals root =
   List.rev (traverse [] root) |> Markup.of_list
 
 let pretty_print root =
-  signals root
-  |> Markup.pretty_print |> (fun s -> Markup.write_html s) |> Markup.to_string
+  signals root |> Markup.pretty_print |> Markup_lite.to_html_string
 
-let to_string root =
-  signals root |> (fun s -> Markup.write_html s) |> Markup.to_string
+let to_string root = signals root |> Markup_lite.to_html_string
 
 let rec equal_general normalize_children n n' =
   let equal_text s s' = s = s' in
@@ -1287,6 +1298,21 @@ let equal n n' =
 let equal_modulo_whitespace n n' =
   equal_general
     (normalize_children ~drop_comments:false String.trim) (forget_type n) (forget_type n')
+
+let parse text =
+  let baseline = parse_baseline text in
+  let lite =
+    try Some (parse_lite text)
+    with exn ->
+      !Internal.on_lite_exception exn;
+      None
+  in
+  match lite with
+  | None -> baseline
+  | Some lite ->
+    !Internal.on_markup_comparison ();
+    if not (equal baseline lite) then !Internal.on_markup_mismatch ();
+    baseline
 
 let get_children node =
   match node.values with

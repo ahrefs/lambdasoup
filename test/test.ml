@@ -44,6 +44,32 @@ let suites = [
     ("require_succeeds" >:: fun _ ->
       assert_equal (require (Some 0)) 0);
 
+    ("parse-shadow" >:: fun _ ->
+      let comparisons = ref 0 in
+      let mismatches = ref 0 in
+      let exceptions = ref 0 in
+      let old_comparison = !Internal.on_markup_comparison in
+      let old_mismatch = !Internal.on_markup_mismatch in
+      let old_exception = !Internal.on_lite_exception in
+      let restore () =
+        Internal.on_markup_comparison := old_comparison;
+        Internal.on_markup_mismatch := old_mismatch;
+        Internal.on_lite_exception := old_exception
+      in
+      Internal.on_markup_comparison := (fun () -> incr comparisons);
+      Internal.on_markup_mismatch := (fun () -> incr mismatches);
+      Internal.on_lite_exception := (fun _ -> incr exceptions);
+      try
+        "<!DOCTYPE html><html><body><p>text</p></body></html>" |> parse |> ignore;
+        "<p>text</p>" |> parse |> ignore;
+        assert_equal !comparisons 2;
+        assert_equal !mismatches 1;
+        assert_equal !exceptions 0;
+        restore ()
+      with exn ->
+        restore ();
+        raise exn);
+
     ("parse-select-list" >:: fun _ ->
       let soup = page "list" |> parse in
       let test selector expected_count =
